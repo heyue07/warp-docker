@@ -11,19 +11,24 @@ on:
     - cron: '0 0 * * *'  # 每天凌晨 0:00 自动检查 (UTC)
 
 jobs:
-  check-version:
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
-      gost_ver: ${{ steps.get-versions.outputs.GOST_VERSION }}
-      warp_ver: ${{ steps.get-versions.outputs.WARP_VERSION }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
       - name: Get versions
-        id: get-versions
+        id: vars
         run: |
-          # 获取 GOST v3 最新版本 (gost-net/gost)
+          # 获取 GOST v3 最新版本 (使用 GITHUB_TOKEN 避免限速)
           if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
-            GOST_VER=$(curl -s https://api.github.com/repos/gost-net/gost/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+            RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/gost-net/gost/releases/latest)
+            GOST_VER=$(echo "$RESPONSE" | jq -r '.tag_name' | sed 's/^v//')
+            if [ "$GOST_VER" = "null" ] || [ -z "$GOST_VER" ]; then
+              echo "Error: Could not fetch GOST version from API. Response was:"
+              echo "$RESPONSE"
+              exit 1
+            fi
           else
             GOST_VER=${{ github.event.inputs.GOST_VERSION }}
           fi
@@ -34,55 +39,9 @@ jobs:
           sudo apt-get update
           WARP_VER=$(apt-cache show cloudflare-warp | grep '^Version:' | head -n 1 | awk '{print $2}' | sed 's/-[0-9]*$//')
           
-          echo "Detected GOST Version: $GOST_VER"
-          echo "Detected WARP Version: $WARP_VER"
-          
           echo "GOST_VERSION=$GOST_VER" >> $GITHUB_OUTPUT
           echo "WARP_VERSION=$WARP_VER" >> $GITHUB_OUTPUT
-
-      - name: Check if image exists
-        id: check
-        run: |
-          IMAGE_TAG="${{ steps.get-versions.outputs.WARP_VERSION }}-${{ steps.get-versions.outputs.GOST_VERSION }}"
-          FULL_IMAGE="${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:$IMAGE_TAG"
-          
-          echo "Checking for $FULL_IMAGE..."
-          
-          # 尝试登录并检查镜像是否存在
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login ${{ secrets.REGISTRY }} -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          
-          if docker manifest inspect "$FULL_IMAGE" > /dev/null 2>&1; then
-            echo "Image $IMAGE_TAG already exists. Skipping build."
-            echo "should_build=false" >> $GITHUB_OUTPUT
-          else
-            echo "New version detected or image missing. Proceeding to build."
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          fi
-
-  build:
-    needs: check-version
-    if: always() && (needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Debug Versions
-        run: |
-          echo "GOST_VERSION: ${{ needs.check-version.outputs.gost_ver }}"
-          echo "WARP_VERSION: ${{ needs.check-version.outputs.warp_ver }}"
-          if [ -z "${{ needs.check-version.outputs.gost_ver }}" ] || [ "${{ needs.check-version.outputs.gost_ver }}" = "null" ]; then
-            echo "Error: GOST_VERSION is empty or null!"
-            exit 1
-          fi
-
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          image: tonistiigi/binfmt:qemu-v7.0.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+          echo "TAG_NAME=$WARP_VER-$GOST_VER" >> $GITHUB_OUTPUT
 
       - name: Log into registry ${{ secrets.REGISTRY }}
         uses: docker/login-action@v3
@@ -91,27 +50,53 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Check if image exists
+        id: check
+        run: |
+          FULL_IMAGE="${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.TAG_NAME }}"
+          echo "Checking for $FULL_IMAGE..."
+          
+          if docker manifest inspect "$FULL_IMAGE" > /dev/null 2>&1 && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "Image already exists and not a manual trigger. Skipping."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Proceeding with build."
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@v3
+        with:
+          image: tonistiigi/binfmt:qemu-v7.0.0
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push
+        if: steps.check.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           build-args: |
-            GOST_VERSION=${{ needs.check-version.outputs.gost_ver }}
-            WARP_VERSION=${{ needs.check-version.outputs.warp_ver }}
+            GOST_VERSION=${{ steps.vars.outputs.GOST_VERSION }}
+            WARP_VERSION=${{ steps.vars.outputs.WARP_VERSION }}
             COMMIT_SHA=${{ github.sha }}
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}-${{ github.sha }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.TAG_NAME }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.vars.outputs.TAG_NAME }}-${{ github.sha }}
 
       - name: Build and push slim variant
+        if: steps.check.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           build-args: |
-            GOST_VERSION=${{ needs.check-version.outputs.gost_ver }}
-            WARP_VERSION=${{ needs.check-version.outputs.warp_ver }}
+            GOST_VERSION=${{ steps.vars.outputs.GOST_VERSION }}
+            WARP_VERSION=${{ steps.vars.outputs.WARP_VERSION }}
             COMMIT_SHA=${{ github.sha }}
             BASE_IMAGE=debian:bookworm-slim
           context: .
@@ -119,5 +104,5 @@ jobs:
           push: true
           tags: |
             ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-latest
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}-${{ github.sha }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ steps.vars.outputs.TAG_NAME }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ steps.vars.outputs.TAG_NAME }}-${{ github.sha }}
