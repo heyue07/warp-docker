@@ -35,7 +35,7 @@ RUN case ${TARGETPLATFORM} in \
     # GOST v3 naming syntax: gost_VERSION_linux_ARCH.tar.gz
     FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
     echo "File name: ${FILE_NAME}" && \
-    curl -LO https://github.com/gost-net/gost/releases/download/v${GOST_VERSION}/${FILE_NAME} && \
+    curl -LO https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/${FILE_NAME} && \
     tar -xzf ${FILE_NAME} -C /usr/bin/ gost && \
     rm ${FILE_NAME} && \
     chmod +x /usr/bin/gost && \

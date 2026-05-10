@@ -20,9 +20,9 @@ jobs:
       - name: Get versions
         id: vars
         run: |
-          # 获取 GOST v3 最新版本 (使用 GITHUB_TOKEN 避免限速)
+          # 获取 GOST v3 最新版本 (正确仓库: go-gost/gost)
           if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
-            RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/gost-net/gost/releases/latest)
+            RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/go-gost/gost/releases/latest)
             GOST_VER=$(echo "$RESPONSE" | jq -r '.tag_name' | sed 's/^v//')
             if [ "$GOST_VER" = "null" ] || [ -z "$GOST_VER" ]; then
               echo "Error: Could not fetch GOST version from API. Response was:"
