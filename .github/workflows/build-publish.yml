@@ -7,9 +7,58 @@ on:
         description: "Version of gost. If empty, the latest version will be used."
         required: false
         type: string
+  schedule:
+    - cron: '0 0 * * *'  # 每天凌晨 0:00 自动检查 (UTC)
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      gost_ver: ${{ steps.get-versions.outputs.GOST_VERSION }}
+      warp_ver: ${{ steps.get-versions.outputs.WARP_VERSION }}
+    steps:
+      - name: Get versions
+        id: get-versions
+        run: |
+          # 获取 GOST 最新版本
+          if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
+            GOST_VER=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          else
+            GOST_VER=${{ github.event.inputs.GOST_VERSION }}
+          fi
+          
+          # 获取 WARP Client 最新版本
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update
+          WARP_VER=$(apt-cache show cloudflare-warp | grep '^Version:' | head -n 1 | awk '{print $2}' | sed 's/-[0-9]*$//')
+          
+          echo "GOST_VERSION=$GOST_VER" >> "$GITHUB_OUTPUT"
+          echo "WARP_VERSION=$WARP_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Check if image exists
+        id: check
+        run: |
+          IMAGE_TAG="${{ steps.get-versions.outputs.WARP_VERSION }}-${{ steps.get-versions.outputs.GOST_VERSION }}"
+          FULL_IMAGE="${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:$IMAGE_TAG"
+          
+          echo "Checking for $FULL_IMAGE..."
+          
+          # 尝试登录并检查镜像是否存在
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login ${{ secrets.REGISTRY }} -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+          if docker manifest inspect "$FULL_IMAGE" > /dev/null 2>&1; then
+            echo "Image $IMAGE_TAG already exists. Skipping build."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version detected or image missing. Proceeding to build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,60 +73,33 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log into registry ${{ secrets.REGISTRY }}
-        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        uses: docker/login-action@v3
         with:
           registry: ${{ secrets.REGISTRY }}
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Get gost version
-        id: get-gost-version
-        run: |
-          if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
-            echo "GOST_VERSION=$(curl -H 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r '.tag_name' | cut -c 2-)" >> "$GITHUB_OUTPUT"
-          else
-            echo "GOST_VERSION=${{ github.event.inputs.GOST_VERSION }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      # gost version must be <number>.<number>.<number>
-      - name: Verify gost version
-        id: verify-gost-version
-        run: |
-          if [[ ! "${{ steps.get-gost-version.outputs.GOST_VERSION }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid gost version: ${{ steps.get-gost-version.outputs.GOST_VERSION }}"
-            exit 1
-          fi
-
-      - name: Get WARP client version
-        id: get-warp-client-version
-        run: |
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update
-          echo "WARP_VERSION=$(apt-cache show cloudflare-warp | grep '^Version:' | awk '{print $2}' | sed 's/-[0-9]*$//')" >> "$GITHUB_OUTPUT"
-
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           build-args: |
-            GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+            GOST_VERSION=${{ needs.check-version.outputs.gost_ver }}
+            WARP_VERSION=${{ needs.check-version.outputs.warp_ver }}
             COMMIT_SHA=${{ github.sha }}
-            
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:latest
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}-${{ github.sha }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}-${{ github.sha }}
 
       - name: Build and push slim variant
         uses: docker/build-push-action@v5
         with:
           build-args: |
-            GOST_VERSION=${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            WARP_VERSION=${{ steps.get-warp-client-version.outputs.WARP_VERSION }}
+            GOST_VERSION=${{ needs.check-version.outputs.gost_ver }}
+            WARP_VERSION=${{ needs.check-version.outputs.warp_ver }}
             COMMIT_SHA=${{ github.sha }}
             BASE_IMAGE=debian:bookworm-slim
           context: .
@@ -85,5 +107,5 @@ jobs:
           push: true
           tags: |
             ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-latest
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}
-            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ steps.get-warp-client-version.outputs.WARP_VERSION }}-${{ steps.get-gost-version.outputs.GOST_VERSION }}-${{ github.sha }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}
+            ${{ secrets.REGISTRY }}/${{ secrets.IMAGE_NAME }}:slim-${{ needs.check-version.outputs.warp_ver }}-${{ needs.check-version.outputs.gost_ver }}-${{ github.sha }}
