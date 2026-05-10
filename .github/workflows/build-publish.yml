@@ -34,8 +34,11 @@ jobs:
           sudo apt-get update
           WARP_VER=$(apt-cache show cloudflare-warp | grep '^Version:' | head -n 1 | awk '{print $2}' | sed 's/-[0-9]*$//')
           
-          echo "GOST_VERSION=$GOST_VER" >> "$GITHUB_OUTPUT"
-          echo "WARP_VERSION=$WARP_VER" >> "$GITHUB_OUTPUT"
+          echo "Detected GOST Version: $GOST_VER"
+          echo "Detected WARP Version: $WARP_VER"
+          
+          echo "GOST_VERSION=$GOST_VER" >> $GITHUB_OUTPUT
+          echo "WARP_VERSION=$WARP_VER" >> $GITHUB_OUTPUT
 
       - name: Check if image exists
         id: check
@@ -50,17 +53,26 @@ jobs:
           
           if docker manifest inspect "$FULL_IMAGE" > /dev/null 2>&1; then
             echo "Image $IMAGE_TAG already exists. Skipping build."
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "should_build=false" >> $GITHUB_OUTPUT
           else
             echo "New version detected or image missing. Proceeding to build."
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "should_build=true" >> $GITHUB_OUTPUT
           fi
 
   build:
     needs: check-version
-    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    if: always() && (needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
+      - name: Debug Versions
+        run: |
+          echo "GOST_VERSION: ${{ needs.check-version.outputs.gost_ver }}"
+          echo "WARP_VERSION: ${{ needs.check-version.outputs.warp_ver }}"
+          if [ -z "${{ needs.check-version.outputs.gost_ver }}" ] || [ "${{ needs.check-version.outputs.gost_ver }}" = "null" ]; then
+            echo "Error: GOST_VERSION is empty or null!"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v3
 
