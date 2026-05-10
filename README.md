@@ -30,6 +30,7 @@ services:
       - "1080:1080"
     environment:
       - WARP_SLEEP=2
+      # - GOST_ARGS=-L socks5://admin:123456@:1080
       # - WARP_LICENSE_KEY= # optional
       # - WARP_ENABLE_NAT=1 # enable nat
     cap_add:
