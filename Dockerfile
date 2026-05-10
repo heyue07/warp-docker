@@ -19,10 +19,10 @@ COPY ./healthcheck /healthcheck
 # install dependencies
 RUN case ${TARGETPLATFORM} in \
       "linux/amd64")   export ARCH="amd64" ;; \
-      "linux/arm64")   export ARCH="armv8" ;; \
+      "linux/arm64")   export ARCH="arm64" ;; \
       *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" && exit 1 ;; \
     esac && \
-    echo "Building for ${TARGETPLATFORM} with GOST ${GOST_VERSION}" &&\
+    echo "Building for ${TARGETPLATFORM} with GOST ${GOST_VERSION}" && \
     apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y curl gnupg lsb-release sudo jq ipcalc && \
@@ -32,27 +32,12 @@ RUN case ${TARGETPLATFORM} in \
     apt-get install -y cloudflare-warp && \
     apt-get clean && \
     apt-get autoremove -y && \
-    MAJOR_VERSION=$(echo ${GOST_VERSION} | cut -d. -f1) && \
-    MINOR_VERSION=$(echo ${GOST_VERSION} | cut -d. -f2) && \
-    # detect if version >= 2.12.0, which uses new filename syntax
-    if [ "${MAJOR_VERSION}" -ge 3 ] || [ "${MAJOR_VERSION}" -eq 2 -a "${MINOR_VERSION}" -ge 12 ]; then \
-      NAME_SYNTAX="new" && \
-      if [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-        ARCH="arm64"; \
-      fi && \
-      FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz"; \
-    else \
-      NAME_SYNTAX="legacy" && \
-      FILE_NAME="gost-linux-${ARCH}-${GOST_VERSION}.gz"; \
-    fi && \
+    # GOST v3 naming syntax: gost_VERSION_linux_ARCH.tar.gz
+    FILE_NAME="gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
     echo "File name: ${FILE_NAME}" && \
-    curl -LO https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/${FILE_NAME} && \
-    if [ "${NAME_SYNTAX}" = "new" ]; then \
-      tar -xzf ${FILE_NAME} -C /usr/bin/ gost; \
-    else \
-      gunzip ${FILE_NAME} && \
-      mv gost-linux-${ARCH}-${GOST_VERSION} /usr/bin/gost; \
-    fi && \
+    curl -LO https://github.com/gost-net/gost/releases/download/v${GOST_VERSION}/${FILE_NAME} && \
+    tar -xzf ${FILE_NAME} -C /usr/bin/ gost && \
+    rm ${FILE_NAME} && \
     chmod +x /usr/bin/gost && \
     chmod +x /entrypoint.sh && \
     chmod +x /healthcheck/index.sh && \

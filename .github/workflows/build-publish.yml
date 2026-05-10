@@ -21,9 +21,9 @@ jobs:
       - name: Get versions
         id: get-versions
         run: |
-          # 获取 GOST 最新版本
+          # 获取 GOST v3 最新版本 (gost-net/gost)
           if [ -z "${{ github.event.inputs.GOST_VERSION }}" ]; then
-            GOST_VER=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+            GOST_VER=$(curl -s https://api.github.com/repos/gost-net/gost/releases/latest | jq -r '.tag_name' | sed 's/^v//')
           else
             GOST_VER=${{ github.event.inputs.GOST_VERSION }}
           fi
